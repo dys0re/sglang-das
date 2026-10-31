@@ -214,9 +214,9 @@ class MambaPool:
                 name = f.name
                 v = getattr(self, name)
                 if name in ("conv", "intermediate_conv_window"):
-                    kwargs[name] = [conv[layer] for conv in v]
+                    kwargs[name] = [conv[layer].detach() for conv in v]
                 else:
-                    kwargs[name] = v[layer]
+                    kwargs[name] = v[layer].detach()
 
             return type(self)(**kwargs)
 
@@ -355,13 +355,20 @@ class MambaPool:
             )
             self.mem_usage = self.mamba_cache.mem_usage_bytes() / GB
             self.num_mamba_layers = num_mamba_layers
+            # Build each layer's zero-copy view outside torch.compile. Selecting
+            # a layer from the shared state while tracing a mutating Triton op
+            # can make functionalization clone all preceding layers' storage.
+            self._layer_caches = tuple(
+                self.mamba_cache.at_layer_idx(layer)
+                for layer in range(num_mamba_layers)
+            )
 
     def get_speculative_mamba2_params_all_layers(self) -> SpeculativeState:
         assert isinstance(self.mamba_cache, self.SpeculativeState)
         return self.mamba_cache
 
     def mamba2_layer_cache(self, layer_id: int):
-        return self.mamba_cache.at_layer_idx(layer_id)
+        return self._layer_caches[layer_id]
 
     def available_size(self):
         return len(self.free_slots)
